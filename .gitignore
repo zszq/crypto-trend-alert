@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# 历史回放缓存仅用于本地复现，避免将大量行情数据提交到仓库。
+.replay-cache/
