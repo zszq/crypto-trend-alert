@@ -1,0 +1,5 @@
+ccxt>=4.5.78
+aiohttp>=3.9
+PyYAML>=6.0
+# 仅在 config.yaml 使用 socks 代理时需要（会一并安装 python-socks）
+aiohttp-socks>=0.9

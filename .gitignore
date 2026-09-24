@@ -1,0 +1,7 @@
+# 运行时输出（trendalert.log / alerts.jsonl）
+logs/
+
+__pycache__/
+*.pyc
+.venv/
+venv/
