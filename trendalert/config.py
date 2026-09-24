@@ -10,6 +10,7 @@ import yaml
 class ProxyConfig:
     http: str = ""
     socks: str = ""
+    system: bool = True
 
 
 @dataclass
@@ -50,15 +51,17 @@ class SignalConfig:
 
 @dataclass
 class FeedConfig:
-    close_grace_seconds: float = 2
-    rest_fallback_seconds: float = 8
+    rest_confirm_delay_seconds: float = 1
+    ws_fallback_seconds: float = 15
     stale_ws_seconds: float = 30
     congestion_ms: float = 5000
     warmup_minutes: int = 600
     reconcile_seconds: float = 300
     reconcile_bars: int = 10
-    rest_concurrency: int = 5
-    rest_timeout_ms: int = 20000
+    rest_concurrency: int = 10
+    rest_timeout_ms: int = 10000
+    bulk_timeout_ms: int = 90000
+    markets_reload_hours: float = 6
 
 
 @dataclass

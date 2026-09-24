@@ -59,8 +59,10 @@ class SymbolSeries:
     缺口由引擎通过 REST 回补或补平线解决，这里只负责存储与合成。
     """
 
-    def __init__(self, symbol: str, timeframes: list[int], keep: int = 500):
+    def __init__(self, symbol: str, timeframes: list[int], keep: int = 500, name: str | None = None):
         self.symbol = symbol
+        # 日志与报警里展示的名称，使用交易所原生写法（BTC_USDT）
+        self.name = name or symbol
         self.timeframes = sorted(timeframes)
         # 尚未确认的 1m（可能仍在变化）
         self.raw: dict[int, Bar] = {}
@@ -76,6 +78,8 @@ class SymbolSeries:
         self.backfill_pending = False
         self.backfill_retry_at = 0
         self.backfill_failures = 0
+        # 因 REST 长时间失败而用 WS 数据确认的 1m，等待对账修正
+        self.unverified: set[int] = set()
 
     # ---------- 原始数据写入 ----------
 
@@ -149,12 +153,14 @@ class SymbolSeries:
             del self.raw[ts]
         return closed
 
-    def correct(self, bar: Bar) -> bool:
-        """用 REST 数据修正已确认的 1m，并重算受影响的合成周期；返回是否有改动。"""
+    def correct(self, bar: Bar) -> Bar | None:
+        """用 REST 数据修正已确认的 1m，并重算受影响的合成周期；返回被替换的旧数据，无改动返回 None。"""
+        self.unverified.discard(bar.ts)
         b1 = self.bars[1]
         idx = _find(b1, bar.ts)
         if idx is None or b1[idx].same_as(bar):
-            return False
+            return None
+        old = b1[idx]
         b1[idx] = bar
         for tf in self.timeframes:
             if tf == 1:
@@ -167,7 +173,7 @@ class SymbolSeries:
             if first is None or first + tf > len(b1):
                 continue
             self.bars[tf][tidx] = aggregate(start, [b1[i] for i in range(first, first + tf)])
-        return True
+        return old
 
 
 def _find(dq: deque[Bar], ts: int) -> int | None:

@@ -75,12 +75,14 @@ async def main() -> None:
     ap.add_argument("--top", type=int, default=0, help="只回放成交额前 N 个，0 表示全部")
     args = ap.parse_args()
     cfg = load_config(args.config)
-    rest, _ws = build_exchanges(cfg)
+    ex = build_exchanges(cfg)
+    rest = ex.rest
     try:
-        await rest.load_markets()
-        tickers = await rest.fetch_tickers(params={"type": "swap"})
+        await ex.bulk.load_markets()
+        rest.set_markets_from_exchange(ex.bulk)
+        tickers = await ex.bulk.fetch_tickers(params={"type": "swap"})
         uni = Universe(cfg.universe)
-        uni.update(rest.markets, tickers, time.time())
+        uni.update(ex.bulk.markets, tickers, time.time())
         symbols = sorted(uni.active, key=lambda s: -uni.quote_volume.get(s, 0))
         if args.top:
             symbols = symbols[: args.top]
@@ -91,16 +93,16 @@ async def main() -> None:
         sem = asyncio.Semaphore(cfg.feed.rest_concurrency)
         histories = await asyncio.gather(*(fetch_history(rest, s, since, end, sem) for s in symbols), return_exceptions=True)
     finally:
-        await rest.close()
-        await _ws.close()
+        for e in (ex.rest, ex.bulk, ex.ws):
+            await e.close()
 
     detector = Detector(cfg.signal)
     stats = {"level": Counter(), "dir": Counter(), "tf": Counter(), "symbol": Counter(), "reject": Counter()}
     for sym, hist in zip(symbols, histories):
         if isinstance(hist, Exception):
-            print(f"{sym} 拉取失败：{hist!r}")
+            print(f"{rest.market(sym)['id']} 拉取失败：{hist!r}")
             continue
-        simulate(sym, hist, cfg, warm, detector, stats)
+        simulate(rest.market(sym)["id"], hist, cfg, warm, detector, stats)
 
     total = sum(stats["level"].values())
     per_day = lambda n: f"{n / args.days:.0f}/天"

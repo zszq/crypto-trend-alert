@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -16,6 +17,44 @@ from .signals import LEVELS, Evaluation
 log = logging.getLogger("trendalert")
 
 LEVEL_CN = {"low": "低", "medium": "中", "high": "高"}
+
+
+def _enable_console_color(stream) -> bool:
+    # 重定向时保留纯文本；Windows 控制台需要开启 VT 才能解释 ANSI 颜色。
+    if not stream.isatty():
+        return False
+    if sys.platform != "win32":
+        return True
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        handle = msvcrt.get_osfhandle(stream.fileno())
+        mode = wintypes.DWORD()
+        return bool(
+            kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+            and kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+        )
+    except (OSError, ValueError):
+        return False
+
+
+class ConsoleFormatter(logging.Formatter):
+    def __init__(self, fmt: str, use_color: bool):
+        super().__init__(fmt)
+        self.use_color = use_color
+
+    def format(self, record: logging.LogRecord) -> str:
+        text = super().format(record)
+        color = {"up": "\033[32m", "down": "\033[31m"}.get(getattr(record, "alert_direction", None))
+        # 只给最终终端文本着色，不修改共享的日志记录，避免污染文件输出。
+        if self.use_color and color:
+            return f"{color}{text}\033[0m"
+        return text
 
 
 @dataclass
@@ -34,6 +73,7 @@ class Alert:
 
     def text(self) -> str:
         arrow = "连涨" if self.direction == "up" else "连跌"
+        periods = "/".join(f"{tf}m" for tf in sorted({e.tf for e in self.triggered}))
         trig = " ".join(
             f"{e.tf}m({e.length}次 {e.move_pct:+.2f}%"
             + (f" 量x{e.vol_ratio:.1f}" if e.vol_ratio is not None else "")
@@ -43,11 +83,13 @@ class Alert:
         res = ",".join(f"{tf}m" for tf in self.resonance)
         t = datetime.fromtimestamp(self.time / 1000, timezone.utc).astimezone().strftime("%H:%M:%S")
         s = (
-            f"[{LEVEL_CN[self.level]}] {arrow} {self.symbol} 价格 {self.price:g} | 触发 {trig} | "
+            f"[{periods}] 预警 [{LEVEL_CN[self.level]}] {arrow} {self.symbol} 价格 {self.price:g} | 触发 {trig} | "
             f"共振 {res} | 24h额 {self.quote_volume_24h / 1e6:.1f}M | {t} 延迟 {self.delay_ms / 1000:.1f}s"
         )
         if self.congested:
             s += " | 网络阻塞"
+        if self.extra.get("unverified"):
+            s += " | 数据未经 REST 核实"
         return s
 
     def to_dict(self) -> dict:
@@ -69,7 +111,7 @@ def setup_logging(cfg: NotifyConfig) -> logging.Logger:
     if cfg.console:
         ch = logging.StreamHandler()
         ch.setLevel(logging.INFO)
-        ch.setFormatter(fmt)
+        ch.setFormatter(ConsoleFormatter("%(asctime)s %(levelname)s %(message)s", _enable_console_color(ch.stream)))
         root.addHandler(ch)
     return root
 
@@ -95,7 +137,7 @@ class Notifier:
             await self._session.close()
 
     def emit(self, alert: Alert) -> None:
-        log.warning("预警 %s", alert.text())
+        log.info("%s", alert.text(), extra={"alert_direction": alert.direction})
         try:
             with self._alert_file.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(alert.to_dict(), ensure_ascii=False) + "\n")

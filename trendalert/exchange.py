@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import logging
 import time
+import urllib.request
 from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import ccxt.async_support as ccxt_async
 import ccxt.pro as ccxtpro
@@ -37,10 +39,10 @@ class GateWS(ccxtpro.gate):
         return super().handle_ohlcv(client, message)
 
 
-def _exchange_config(cfg: Config) -> dict:
+def _exchange_config(timeout_ms: int) -> dict:
     return {
         "enableRateLimit": True,
-        "timeout": cfg.feed.rest_timeout_ms,
+        "timeout": timeout_ms,
         "options": {
             "defaultType": "swap",
             # 只加载 USDT 永续，Gate 全量市场（现货/期权/交割）加载非常慢
@@ -50,20 +52,47 @@ def _exchange_config(cfg: Config) -> dict:
     }
 
 
-def build_exchanges(cfg: Config) -> tuple[ccxt_async.gate, GateWS]:
-    rest = ccxt_async.gate(_exchange_config(cfg))
-    ws = GateWS(_exchange_config(cfg))
-    # load_markets 默认还会拉取现货币种列表，本项目用不到，网络差时它经常超时拖慢启动
-    rest.has["fetchCurrencies"] = False
+def resolve_proxy(cfg: Config) -> str:
+    """返回实际使用的代理地址，空字符串表示直连。"""
     if cfg.proxy.http:
-        rest.https_proxy = cfg.proxy.http
-        ws.https_proxy = cfg.proxy.http
-        ws.wss_proxy = cfg.proxy.http
-    elif cfg.proxy.socks:
-        rest.socks_proxy = cfg.proxy.socks
-        ws.socks_proxy = cfg.proxy.socks
-        ws.ws_socks_proxy = cfg.proxy.socks
-    return rest, ws
+        return cfg.proxy.http
+    if cfg.proxy.socks:
+        return cfg.proxy.socks
+    if not cfg.proxy.system:
+        return ""
+    # getproxies 依次读取环境变量和 Windows“使用代理服务器”注册表设置（未启用时为空）
+    proxies = urllib.request.getproxies()
+    url = proxies.get("https") or proxies.get("http") or proxies.get("all") or proxies.get("socks") or ""
+    if url.startswith("socks://"):
+        # urllib 对 socks 只给出不带版本的 scheme，aiohttp-socks 需要明确版本
+        url = "socks5://" + url[len("socks://"):]
+    return url
+
+
+@dataclass
+class Exchanges:
+    rest: ccxt_async.gate   # K 线请求：短超时，失败快速重试
+    bulk: ccxt_async.gate   # 市场列表、全量 tickers：响应体大，需要长超时
+    ws: GateWS
+    proxy: str
+
+
+def build_exchanges(cfg: Config) -> Exchanges:
+    rest = ccxt_async.gate(_exchange_config(cfg.feed.rest_timeout_ms))
+    bulk = ccxt_async.gate(_exchange_config(cfg.feed.bulk_timeout_ms))
+    ws = GateWS(_exchange_config(cfg.feed.rest_timeout_ms))
+    # load_markets 默认还会拉取现货币种列表，本项目用不到，网络差时它经常超时拖慢启动
+    bulk.has["fetchCurrencies"] = False
+    proxy = resolve_proxy(cfg)
+    if proxy.startswith("socks"):
+        for ex in (rest, bulk, ws):
+            ex.socks_proxy = proxy
+        ws.ws_socks_proxy = proxy
+    elif proxy:
+        for ex in (rest, bulk, ws):
+            ex.https_proxy = proxy
+        ws.wss_proxy = proxy
+    return Exchanges(rest, bulk, ws, proxy)
 
 
 class ServerClock:

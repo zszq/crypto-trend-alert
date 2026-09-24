@@ -1,20 +1,24 @@
 # Gate USDT 永续合约连涨/连跌预警配置
 
 proxy:
-  # 二选一，都留空表示直连。
-  # http 代理同时用于 REST 与 WebSocket，例如 http://127.0.0.1:7890
+  # http 与 socks 二选一。
+  # http 代理同时用于 REST 与 WebSocket，例如 http://127.0.0.1:7897
   http: ""
-  # socks 代理需要 aiohttp-socks（依赖 python-socks），例如 socks5://127.0.0.1:7891
+  # socks 代理需要 aiohttp-socks（依赖 python-socks），例如 socks5h://127.0.0.1:7897
   # 用 socks5h:// 让代理端解析域名，可规避本地 DNS 污染
   socks: ""
+  # 上面两项都为空时，是否使用系统代理（环境变量 HTTPS_PROXY 等，或 Windows“使用代理服务器”设置）
+  # 系统代理也没开启时直连；国内直连 Gate 经常超时、断线，建议开启代理
+  system: true
 
 universe:
   min_quote_volume: 5000000       # 24h 成交额（USDT）达到该值才加入监控
   exit_quote_volume: 4000000      # 低于该值且持续 exit_after_minutes 才移除，避免在门槛附近反复进出
   exit_after_minutes: 30
   refresh_seconds: 600            # 标的池刷新间隔
-  include: []                     # 强制监控的合约，如 ["BTC/USDT:USDT"]
-  exclude: []                     # 强制排除的合约
+  # 只监控虚拟币合约，股票、指数、贵金属、外汇、大宗商品会被自动排除
+  include: []                     # 强制监控的合约（可绕过虚拟币限制），如 ["BTC_USDT"]
+  exclude: []                     # 强制排除的合约，如 ["USDC_USDT"]
 
 signal:
   timeframes: [1, 3, 5, 15]       # 分钟；除 1 外都由 1m 合成
@@ -35,15 +39,19 @@ signal:
   stale_periods: 1.0              # 周期收盘后超过 N 个周期才确认的信号视为过期，只记录不报警
 
 feed:
-  close_grace_seconds: 2          # 1m 收盘后等待 WS 收尾推送的时间
-  rest_fallback_seconds: 8        # 收盘后超过该时间 WS 仍无法确认，则用 REST 拉取
+  # 收盘数据以 REST 为准：实测 Gate WS 的收盘推送（w=true）约 10% 与最终 K 线不一致（多为收盘价差一跳），
+  # 而 REST 在收盘 1 秒后即为最终值
+  rest_confirm_delay_seconds: 1   # 1m 收盘后多久用 REST 拉取确认
+  ws_fallback_seconds: 15         # 收盘后超过该时间 REST 仍未成功，改用 WS 数据确认（事后由对账修正）
   stale_ws_seconds: 30            # 全局超过该时间没有任何 WS 消息，判定假死并强制重连
   congestion_ms: 5000             # 消息延迟超过该值判定为网络阻塞
   warmup_minutes: 600             # 启动预热拉取的 1m 历史根数
   reconcile_seconds: 300          # 定期用 REST 对账最近若干根 1m
   reconcile_bars: 10
-  rest_concurrency: 5
-  rest_timeout_ms: 20000
+  rest_concurrency: 10
+  rest_timeout_ms: 10000          # K 线请求超时；宁可快速失败重试，也不要长时间占住并发
+  bulk_timeout_ms: 90000          # 市场列表、全量 tickers 响应体很大（约 1MB），需要更长超时
+  markets_reload_hours: 6         # 定期重新加载合约列表，跟上新上线、下架与分类变化
 
 notify:
   console: true

@@ -1,6 +1,6 @@
 # crypto-trend-alert
 
-监控 Gate USDT 永续合约中 24h 成交额大于 500 万 U 的交易对，在 1m / 3m / 5m / 15m 周期上检测“连续 4 次收盘价高于（或低于）上一根收盘价”，经过滤后报警。
+监控 Gate USDT 永续合约中 24h 成交额大于 500 万 U 的虚拟币交易对（股票、指数、贵金属、外汇、大宗商品自动排除），在 1m / 3m / 5m / 15m 周期上检测“连续 4 次收盘价高于（或低于）上一根收盘价”，经过滤后报警。
 
 ## 运行
 
@@ -11,14 +11,14 @@ python replay.py --days 2      # 用历史数据回放，统计报警频率，�
 python -m unittest discover -s tests -t .
 ```
 
-需要代理时修改 `config.yaml` 中的 `proxy.http` 或 `proxy.socks`（socks 依赖 `aiohttp-socks`）。
+代理：在 `config.yaml` 中填写 `proxy.http`（如 `http://127.0.0.1:7897`）或 `proxy.socks`（依赖 `aiohttp-socks`）。都不填时自动使用系统代理（环境变量或 Windows“使用代理服务器”设置），系统代理也没开就直连。国内直连 Gate 经常超时、断线，建议使用代理；启动日志第一行会显示实际使用的网络方式。
 
 ## 数据链路
 
-- **标的池**：每 10 分钟调用一次 `fetch_tickers`。成交额达到 500 万才加入，低于 400 万并持续 30 分钟才移除。
-- **WebSocket**：通过 ccxt.pro 订阅 `futures.candlesticks` 1m，所有合约共用一条连接。`GateWS` 会旁路一份原始推送，拿到 ccxt 丢弃的 `w`（窗口关闭）字段和服务器时间。
-- **收盘确认**：1m 严格按时间顺序、无缺口地确认。满足以下任一条件即视为收盘：收到 `w=true`；已收到下一分钟的数据；连接正常且已过收盘时间加宽限期。
-- **REST 回补**：以下情况改用 REST 拉取：K 线所在时段内 WS 断开过、超过 `rest_fallback_seconds` 仍无法确认、某分钟缺数据。REST 确认该分钟没有成交时补一根平线。WS 整体不可用时，这条逻辑会自动变成每分钟 REST 轮询。
+- **标的池**：每 10 分钟调用一次 `fetch_tickers`，只收虚拟币合约（`contract_type` 为空且不在下架流程）。成交额达到 500 万才加入，低于 400 万并持续 30 分钟才移除。合约列表每 6 小时重新加载一次。
+- **WebSocket**：通过 ccxt.pro 订阅 `futures.candlesticks` 1m，所有合约共用一条连接，用于连接存活检测、估算服务器时间和延迟，以及 REST 失败时兜底。`GateWS` 会旁路一份原始推送，拿到 ccxt 丢弃的 `w`（窗口关闭）字段和服务器时间。
+- **收盘确认（以 REST 为准）**：实测 Gate WS 的收盘推送约 10% 与最终 K 线不一致（多为收盘价差一跳），而 REST 在收盘 1 秒后就是最终值。所以每根 1m 收盘 1 秒后用 REST 拉取确认，1m 严格按时间顺序、无缺口地确认。REST 确认某分钟没有成交时补一根平线。
+- **WS 兜底**：REST 连续失败超过 15 秒，且该分钟 WS 连接正常，就先用 WS 数据确认，报警会标注“数据未经 REST 核实”，事后由对账修正。
 - **对账**：每 5 分钟用 REST 核对最近 10 根 1m。有差异就修正，并重算合成周期。
 - **合成**：3m/5m/15m 按 UTC 整点分桶，桶内 1m 到齐才算收盘。
 - **健康检查**：用服务器时间估算延迟，超过 5 秒标记为网络阻塞；超过 30 秒没有任何消息，就强制断开重连。
@@ -36,6 +36,6 @@ python -m unittest discover -s tests -t .
 
 ## 输出
 
-- 控制台，以及 `logs/trendalert.log`（DEBUG 级别包含未通过过滤的原因）
+- 控制台，以及 `logs/trendalert.log`（DEBUG 级别包含未通过过滤的原因）。交易对统一显示为 `BTC_USDT` 形式；断网时大量相同的失败会合并成一条汇总日志
 - `logs/alerts.jsonl`：每条报警一行 JSON
 - webhook：支持 generic / dingtalk / wecom / feishu。只推送达到 `min_level` 等级的报警。
